@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Runner Game</title>
+  <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Courier New', monospace;
+      color: #eee;
+    }
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 16px;
+      color: #e94560;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+    }
+    canvas {
+      border: 2px solid #e94560;
+      border-radius: 4px;
+      display: block;
+      box-shadow: 0 0 30px rgba(233, 69, 96, 0.3);
+      width: min(960px, 100vw - 4px);
+      height: auto;
+      aspect-ratio: 16 / 9;
+    }
+    #info {
+      margin-top: 10px;
+      font-size: 0.8rem;
+      color: #aaa;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Runner</h1>
+  <canvas id="canvas" width="960" height="540"></canvas>
+  <div id="info">SPACE / TAP — jump &nbsp;|&nbsp; double jump allowed</div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // ── colours ────────────────────────────────────────────────────────────
+    const C = {
+      sky:      '#16213e',
+      ground:   '#0f3460',
+      accent:   '#e94560',
+      player:   '#53d8fb',
+      obstacle: '#e94560',
+      score:    '#ffffff',
+      dust:     'rgba(83,216,251,0.35)',
+      star:     'rgba(255,255,255,',
+    };
+
+    // ── stars ───────────────────────────────────────────────────────────────
+    const stars = Array.from({length: 80}, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * (canvas.height - 60),
+      r: Math.random() * 1.5 + 0.3,
+      a: Math.random(),
+    }));
+
+    // ── game state ──────────────────────────────────────────────────────────
+    const GROUND_Y = canvas.height - 50;
+    const GRAVITY  = 0.7;
+    const JUMP_V   = -17;
+
+    let player, obstacles, coins, particles, score, speed, frame, gameOver, started, coinCount;
+
+    function reset() {
+      player = {
+        x: 100, y: GROUND_Y,
+        w: 56,  h: 40,
+        vy: 0,
+        jumps: 0,
+        onGround: true,
+      };
+      obstacles = [];
+      coins     = [];
+      particles = [];
+      score     = 0;
+      coinCount = 0;
+      speed     = 5;
+      frame     = 0;
+      gameOver  = false;
+      started   = false;
+    }
+    reset();
+
+    // ── jump ────────────────────────────────────────────────────────────────
+    function jump() {
+      if (!started) { started = true; return; }
+      if (gameOver) { reset(); started = true; return; }
+      if (player.jumps < 2) {
+        player.vy = JUMP_V * (player.jumps === 1 ? 0.8 : 1);
+        player.jumps++;
+        player.onGround = false;
+        spawnDust();
+      }
+    }
+
+    window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); jump(); } });
+    canvas.addEventListener('pointerdown', jump);
+
+    // ── particles ───────────────────────────────────────────────────────────
+    function spawnDust() {
+      for (let i = 0; i < 6; i++) {
+        particles.push({
+          x: player.x + player.w / 2,
+          y: player.y + player.h,
+          vx: (Math.random() - 0.5) * 3,
+          vy: Math.random() * -2,
+          life: 1,
+        });
+      }
+    }
+
+    function spawnLand() {
+      for (let i = 0; i < 10; i++) {
+        particles.push({
+          x: player.x + player.w / 2 + (Math.random() - 0.5) * 20,
+          y: GROUND_Y + player.h,
+          vx: (Math.random() - 0.5) * 5,
+          vy: -Math.random() * 3,
+          life: 1,
+        });
+      }
+    }
+
+    // ── obstacle spawning ───────────────────────────────────────────────────
+    function maybeSpawn() {
+      const lastX = obstacles.length ? obstacles[obstacles.length - 1].x : 0;
+      if (canvas.width - lastX < 320) return;
+      if (Math.random() > 0.028) return;
+
+      const pool = ['sign', 'hole'];
+      if (score > 80) pool.push('bird');
+      const type = pool[Math.floor(Math.random() * pool.length)];
+
+      if (type === 'sign') {
+        obstacles.push({ type, x: canvas.width - 15, y: GROUND_Y - 78, w: 52, h: 48 });
+      } else if (type === 'hole') {
+        const w = 75 + Math.random() * 45;
+        obstacles.push({ type, x: canvas.width + 10, y: GROUND_Y, w, h: 20 });
+      } else {
+        const baseY = GROUND_Y - 110 - Math.random() * 50;
+        obstacles.push({ type, x: canvas.width + 10, y: baseY, w: 48, h: 22, baseY });
+      }
+    }
+
+    // ── coin spawning ───────────────────────────────────────────────────────
+    function maybeSpawnCoins() {
+      if (Math.random() < 0.018) {
+        // arc or row of 3–5 coins at varying heights
+        const count  = Math.floor(Math.random() * 3) + 3;
+        const startX = canvas.width + 10;
+        const baseY  = GROUND_Y - 20 - Math.random() * 120;
+        const arc    = Math.random() < 0.5;
+        for (let i = 0; i < count; i++) {
+          const offsetY = arc ? -Math.sin((i / (count - 1)) * Math.PI) * 60 : 0;
+          coins.push({
+            x: startX + i * 38,
+            y: baseY + offsetY,
+            r: 10,
+            pulse: Math.random() * Math.PI * 2,
+          });
+        }
+      }
+    }
+
+    function spawnCoinPop(x, y) {
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * (1.5 + Math.random() * 2),
+          vy: Math.sin(angle) * (1.5 + Math.random() * 2),
+          life: 1,
+          coin: true,
+        });
+      }
+    }
+
+    // ── AABB collision ──────────────────────────────────────────────────────
+    function collides(a, b) {
+      const pad = 4;
+      return a.x + pad < b.x + b.w &&
+             a.x + a.w - pad > b.x + pad &&
+             a.y + pad < b.y + b.h &&
+             a.y + a.h - pad > b.y + pad;
+    }
+
+    // ── draw helpers ────────────────────────────────────────────────────────
+    function drawPlayer() {
+      const {x, y} = player;
+
+      // wheel centres (bottoms touch ground surface = y+40)
+      const rWx = x + 13, rWy = y + 28, rWr = 12;
+      const fWx = x + 43, fWy = y + 28, fWr = 12;
+      const bbx = x + 19, bby = y + 28;  // bottom bracket
+      const seatX = x + 17, seatY = y + 11;
+      const hbarX = x + 44, hbarY = y + 18;
+
+      // ── wheels ──
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = '#53d8fb';
+      ctx.beginPath(); ctx.arc(rWx, rWy, rWr, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(fWx, fWy, fWr, 0, Math.PI * 2); ctx.stroke();
+      // spokes
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(83,216,251,0.45)';
+      const sa = frame * 0.15;
+      for (let i = 0; i < 4; i++) {
+        const a = sa + i * Math.PI / 2;
+        ctx.beginPath();
+        ctx.moveTo(rWx, rWy);
+        ctx.lineTo(rWx + Math.cos(a) * rWr, rWy + Math.sin(a) * rWr);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(fWx, fWy);
+        ctx.lineTo(fWx + Math.cos(a) * fWr, fWy + Math.sin(a) * fWr);
+        ctx.stroke();
+      }
+
+      // ── frame ──
+      ctx.strokeStyle = '#53d8fb';
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      const lines = [
+        [bbx, bby, seatX, seatY],
+        [seatX, seatY, hbarX, hbarY],
+        [seatX, seatY, fWx, fWy],
+        [rWx, rWy, bbx, bby],
+        [rWx, rWy, seatX, seatY],
+        [hbarX, hbarY, fWx, fWy],
+      ];
+      for (const [x1,y1,x2,y2] of lines) {
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      }
+      // seat
+      ctx.fillStyle = '#3ab5d4';
+      ctx.fillRect(seatX - 6, seatY - 3, 14, 4);
+      // handlebars
+      ctx.strokeStyle = '#3ab5d4';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(hbarX, hbarY - 6); ctx.lineTo(hbarX + 4, hbarY + 5); ctx.stroke();
+
+      // ── rider ──
+      const hipX = seatX, hipY = seatY + 3;
+      const shoulderX = x + 29, shoulderY = y + 7;
+      const headX = x + 21, headY = y + 4;
+
+      // torso
+      ctx.strokeStyle = '#ff9f43';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(hipX, hipY); ctx.lineTo(shoulderX, shoulderY); ctx.stroke();
+      // arm
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(shoulderX, shoulderY); ctx.lineTo(hbarX, hbarY + 2); ctx.stroke();
+      // head skin
+      ctx.fillStyle = '#ffbe76';
+      ctx.beginPath(); ctx.arc(headX, headY + 5, 6, 0, Math.PI * 2); ctx.fill();
+      // helmet
+      ctx.fillStyle = C.accent;
+      ctx.beginPath();
+      ctx.arc(headX, headY + 3, 7, Math.PI, 0);
+      ctx.fill();
+      ctx.fillRect(headX - 8, headY + 3, 16, 3);
+
+      // ── legs (pedalling) ──
+      const ca = frame * 0.18;
+      const cl = 8;
+      const rPx = bbx + Math.cos(ca) * cl,     rPy = bby + Math.sin(ca) * cl;
+      const lPx = bbx + Math.cos(ca + Math.PI) * cl, lPy = bby + Math.sin(ca + Math.PI) * cl;
+
+      ctx.lineWidth = 3;
+      // right leg
+      ctx.strokeStyle = '#e67e22';
+      const rKx = (hipX + rPx) / 2 + 3, rKy = (hipY + rPy) / 2 - 5;
+      ctx.beginPath(); ctx.moveTo(hipX, hipY); ctx.lineTo(rKx, rKy); ctx.lineTo(rPx, rPy); ctx.stroke();
+      // left leg (dimmer)
+      ctx.strokeStyle = '#ca6f1e';
+      const lKx = (hipX + lPx) / 2 + 2, lKy = (hipY + lPy) / 2 - 4;
+      ctx.beginPath(); ctx.moveTo(hipX, hipY); ctx.lineTo(lKx, lKy); ctx.lineTo(lPx, lPy); ctx.stroke();
+
+      ctx.lineCap = 'butt';
+    }
+
+    function drawObstacle(o) {
+      if (o.type === 'sign') {
+        const cx = o.x + o.w / 2;
+        const gndY = GROUND_Y + 40;
+        const tipY = o.y;
+        const baseY = o.y + 44;
+        // post
+        ctx.fillStyle = '#b2bec3';
+        ctx.fillRect(cx - 3, baseY, 6, gndY - baseY);
+        // triangle sign
+        ctx.fillStyle = '#f9ca24';
+        ctx.strokeStyle = '#d63031';
+        ctx.lineWidth = 3;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx, tipY);
+        ctx.lineTo(cx + 26, baseY);
+        ctx.lineTo(cx - 26, baseY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // exclamation mark
+        ctx.fillStyle = '#d63031';
+        ctx.fillRect(cx - 3, tipY + 14, 6, 17);
+        ctx.beginPath();
+        ctx.arc(cx, baseY - 7, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+
+      } else if (o.type === 'bird') {
+        const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+        const flap = Math.sin(frame * 0.22) * 0.7;
+        // wing upper
+        ctx.fillStyle = '#74b9ff';
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.quadraticCurveTo(cx + 6, cy - 18 + flap * 18, cx + 24, cy - 10 + flap * 12);
+        ctx.quadraticCurveTo(cx + 10, cy - 3, cx, cy);
+        ctx.closePath();
+        ctx.fill();
+        // wing lower
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.quadraticCurveTo(cx + 6, cy + 18 - flap * 18, cx + 24, cy + 10 - flap * 12);
+        ctx.quadraticCurveTo(cx + 10, cy + 3, cx, cy);
+        ctx.closePath();
+        ctx.fill();
+        // tail
+        ctx.fillStyle = '#0984e3';
+        ctx.beginPath();
+        ctx.moveTo(cx + 11, cy - 2);
+        ctx.lineTo(cx + 22, cy - 7);
+        ctx.lineTo(cx + 20, cy);
+        ctx.lineTo(cx + 22, cy + 7);
+        ctx.lineTo(cx + 11, cy + 2);
+        ctx.closePath();
+        ctx.fill();
+        // body
+        ctx.fillStyle = '#6c5ce7';
+        ctx.beginPath();
+        ctx.ellipse(cx - 2, cy, 13, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // head
+        ctx.fillStyle = '#a29bfe';
+        ctx.beginPath();
+        ctx.arc(cx - 12, cy - 2, 6, 0, Math.PI * 2);
+        ctx.fill();
+        // beak
+        ctx.fillStyle = '#fdcb6e';
+        ctx.beginPath();
+        ctx.moveTo(cx - 17, cy - 2);
+        ctx.lineTo(cx - 24, cy);
+        ctx.lineTo(cx - 17, cy + 2);
+        ctx.closePath();
+        ctx.fill();
+        // eye
+        ctx.fillStyle = '#2d3436';
+        ctx.beginPath();
+        ctx.arc(cx - 14, cy - 3, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+
+      } else if (o.type === 'hole') {
+        const gndY = GROUND_Y + 40;
+        const hw = o.w / 2, cx = o.x + hw;
+        // erase ground surface with dark pit
+        const grad = ctx.createRadialGradient(cx, gndY + 5, 2, cx, gndY + 5, hw);
+        grad.addColorStop(0, '#000');
+        grad.addColorStop(0.6, '#0a0a18');
+        grad.addColorStop(1, 'rgba(10,10,24,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(cx, gndY + 5, hw, 14, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // rim highlight (top half)
+        ctx.strokeStyle = 'rgba(233,69,96,0.7)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(cx, gndY + 2, hw, 10, 0, Math.PI, Math.PI * 2);
+        ctx.stroke();
+        // crack lines
+        ctx.strokeStyle = 'rgba(233,69,96,0.35)';
+        ctx.lineWidth = 1;
+        for (let i = -1; i <= 1; i += 2) {
+          ctx.beginPath();
+          ctx.moveTo(cx + i * hw * 0.6, gndY + 2);
+          ctx.lineTo(cx + i * (hw + 10), gndY - 8 + Math.abs(i) * 4);
+          ctx.stroke();
+        }
+      }
+    }
+
+    function drawGround() {
+      // ground bar
+      ctx.fillStyle = C.ground;
+      ctx.fillRect(0, GROUND_Y + 40, canvas.width, canvas.height - GROUND_Y - 40);
+      // ground line
+      ctx.strokeStyle = C.accent;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, GROUND_Y + 40);
+      ctx.lineTo(canvas.width, GROUND_Y + 40);
+      ctx.stroke();
+      // scrolling dots on ground
+      ctx.fillStyle = 'rgba(233,69,96,0.4)';
+      const dotGap = 60;
+      const offset = (frame * speed) % dotGap;
+      for (let x = -offset; x < canvas.width; x += dotGap) {
+        ctx.fillRect(x, GROUND_Y + 46, 20, 2);
+      }
+    }
+
+    function drawCoins() {
+      for (const c of coins) {
+        const pulse = 0.85 + 0.15 * Math.sin(frame * 0.08 + c.pulse);
+        const r = c.r * pulse;
+        // outer glow
+        const grd = ctx.createRadialGradient(c.x, c.y, r * 0.2, c.x, c.y, r * 1.6);
+        grd.addColorStop(0, 'rgba(255,220,50,0.35)');
+        grd.addColorStop(1, 'rgba(255,220,50,0)');
+        ctx.fillStyle = grd;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, r * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+        // coin body
+        ctx.fillStyle = '#ffd700';
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        // shine
+        ctx.fillStyle = 'rgba(255,255,200,0.6)';
+        ctx.beginPath();
+        ctx.arc(c.x - r * 0.28, c.y - r * 0.28, r * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+        // inner ring
+        ctx.strokeStyle = '#e6a800';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, r * 0.65, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    function drawHUD() {
+      // score
+      ctx.fillStyle = C.score;
+      ctx.font = 'bold 18px Courier New';
+      ctx.textAlign = 'right';
+      ctx.fillText(`SCORE  ${Math.floor(score).toString().padStart(6, '0')}`, canvas.width - 16, 32);
+      // speed
+      ctx.font = '12px Courier New';
+      ctx.fillStyle = '#aaa';
+      ctx.fillText(`SPD ${speed.toFixed(1)}`, canvas.width - 16, 50);
+      // coin icon
+      ctx.fillStyle = '#ffd700';
+      ctx.beginPath();
+      ctx.arc(20, 24, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,200,0.6)';
+      ctx.beginPath();
+      ctx.arc(16, 20, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#e6a800';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(20, 24, 6.5, 0, Math.PI * 2);
+      ctx.stroke();
+      // coin count
+      ctx.fillStyle = '#ffd700';
+      ctx.font = 'bold 20px Courier New';
+      ctx.textAlign = 'left';
+      ctx.fillText(`×${coinCount}`, 36, 32);
+    }
+
+    function drawParticles() {
+      for (const p of particles) {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.coin ? '#ffd700' : C.dust;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.coin ? 3 : 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawOverlay(text, sub) {
+      ctx.fillStyle = 'rgba(22,33,62,0.75)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = C.accent;
+      ctx.font = 'bold 36px Courier New';
+      ctx.textAlign = 'center';
+      ctx.fillText(text, canvas.width / 2, canvas.height / 2 - 10);
+      ctx.fillStyle = '#ccc';
+      ctx.font = '16px Courier New';
+      ctx.fillText(sub, canvas.width / 2, canvas.height / 2 + 24);
+    }
+
+    // ── main loop ───────────────────────────────────────────────────────────
+    function update() {
+      if (!started || gameOver) return;
+
+      frame++;
+      score += speed * 0.05;
+      speed = 5 + score / 200;
+
+      // player physics
+      const wasOnGround = player.onGround;
+      player.vy += GRAVITY;
+      player.y  += player.vy;
+
+      if (player.y >= GROUND_Y) {
+        player.y = GROUND_Y;
+        player.vy = 0;
+        if (!wasOnGround) spawnLand();
+        player.onGround = true;
+        player.jumps = 0;
+      } else {
+        player.onGround = false;
+      }
+
+      // obstacles
+      maybeSpawn();
+      for (const o of obstacles) {
+        o.x -= speed;
+        if (o.type === 'bird') o.y = o.baseY + Math.sin(frame * 0.05) * 22;
+      }
+      obstacles = obstacles.filter(o => o.x + o.w > -10);
+
+      // coins
+      maybeSpawnCoins();
+      for (const c of coins) c.x -= speed;
+      coins = coins.filter(c => {
+        if (c.x + c.r < 0) return false;
+        const px = player.x + player.w / 2, py = player.y + player.h / 2;
+        const dist = Math.hypot(px - c.x, py - c.y);
+        if (dist < c.r + 14) {
+          coinCount++;
+          score += 10;
+          spawnCoinPop(c.x, c.y);
+          return false;
+        }
+        return true;
+      });
+
+      // collision
+      for (const o of obstacles) {
+        if (o.type === 'hole') {
+          // only fatal when riding on the ground
+          if (player.y >= GROUND_Y - 4) {
+            const px1 = player.x + 6, px2 = player.x + player.w - 6;
+            if (px1 < o.x + o.w && px2 > o.x) { gameOver = true; return; }
+          }
+        } else if (collides(player, o)) {
+          gameOver = true; return;
+        }
+      }
+
+      // particles
+      for (const p of particles) {
+        p.x += p.vx; p.y += p.vy; p.vy += 0.15; p.life -= 0.05;
+      }
+      particles = particles.filter(p => p.life > 0);
+    }
+
+    function draw() {
+      // sky
+      ctx.fillStyle = C.sky;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // stars
+      for (const s of stars) {
+        ctx.globalAlpha = s.a * (0.5 + 0.5 * Math.sin(frame * 0.02 + s.x));
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      drawGround();
+      // holes drawn after ground so they cut through it
+      obstacles.filter(o => o.type === 'hole').forEach(drawObstacle);
+      drawCoins();
+      drawParticles();
+      obstacles.filter(o => o.type !== 'hole').forEach(drawObstacle);
+      drawPlayer();
+      drawHUD();
+
+      if (!started) drawOverlay('RUNNER', 'PRESS SPACE OR TAP TO START');
+      if (gameOver)  drawOverlay('GAME OVER', `SCORE ${Math.floor(score)} — SPACE TO RETRY`);
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>
